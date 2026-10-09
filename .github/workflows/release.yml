@@ -1,0 +1,149 @@
+name: Build & Release XPE Agent (.exe con auto-update)
+
+# Este repositorio es PUBLICO: GitHub Actions corre GRATIS e ilimitado aqui.
+# El codigo fuente se clona desde el repo privado xpe-agent/XPE-AGENT-SRC
+# usando el secreto SRC_PAT (solo lectura del espejo).
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Versión (debe existir el tag v<version> en XPE-AGENT-SRC)'
+        required: true
+        default: '1.0.27'
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Determinar versión
+        id: ver
+        shell: bash
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+            echo "tag=v${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            echo "version=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+            echo "tag=$GITHUB_REF_NAME" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Checkout del código FUENTE (repo privado XPE-AGENT-SRC)
+        uses: actions/checkout@v4
+        with:
+          repository: xpe-agent/XPE-AGENT-SRC
+          token: ${{ secrets.SRC_PAT }}
+          ref: ${{ steps.ver.outputs.tag }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Setup Bun (para compilar el backend standalone)
+        uses: oven-sh/setup-bun@v2
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Escribir versión en tauri.conf.json y Cargo.toml
+        shell: bash
+        run: |
+          node -e "
+            const fs = require('fs');
+            const ver = '${{ steps.ver.outputs.version }}';
+            const conf = JSON.parse(fs.readFileSync('src-tauri/tauri.conf.json', 'utf8'));
+            conf.package.version = ver;
+            fs.writeFileSync('src-tauri/tauri.conf.json', JSON.stringify(conf, null, 2));
+          "
+          sed -i "s/^version = \"[^\"]*\"/version = \"${{ steps.ver.outputs.version }}\"/" src-tauri/Cargo.toml
+          cat src-tauri/Cargo.toml | head -3
+
+      - name: Compilar backend standalone (sidecar XPE)
+        shell: bash
+        run: |
+          bun build --compile server.ts --outfile src-tauri/binaries/xpe-backend-x86_64-pc-windows-msvc.exe
+          ls -la src-tauri/binaries/
+
+      - name: Build Tauri App (.msi + .exe firmados para auto-update)
+        shell: bash
+        env:
+          TAURI_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
+          TAURI_PASSWORD: ${{ secrets.TAURI_PASSWORD }}
+          TAURI_KEY_PASSWORD: ${{ secrets.TAURI_PASSWORD }}
+        run: npm run tauri build
+
+      - name: Buscar artefactos generados
+        id: files
+        shell: bash
+        run: |
+          echo "--- msi ---"; ls src-tauri/target/release/bundle/msi/
+          echo "--- nsis ---"; ls src-tauri/target/release/bundle/nsis/
+          MSI=$(ls src-tauri/target/release/bundle/msi/*.msi | head -1)
+          echo "msi_path=$MSI" >> $GITHUB_OUTPUT
+          echo "msi_name=$(basename "$MSI")" >> $GITHUB_OUTPUT
+          ZIP=$(ls src-tauri/target/release/bundle/msi/*.msi.zip | head -1)
+          echo "zip_name=$(basename "$ZIP")" >> $GITHUB_OUTPUT
+          SIG=$(ls src-tauri/target/release/bundle/msi/*.msi.zip.sig | head -1)
+          echo "sig_path=$SIG" >> $GITHUB_OUTPUT
+
+      - name: Generar latest.json (manifest del auto-updater)
+        shell: bash
+        run: |
+          TAG="${{ steps.ver.outputs.tag }}"
+          ZIP_NAME="${{ steps.files.outputs.zip_name }}"
+          MSI_SIG=$(cat "${{ steps.files.outputs.sig_path }}")
+          export XPE_VERSION="$VERSION" XPE_TAG="$TAG" XPE_ZIP="$ZIP_NAME" XPE_SIG="$MSI_SIG"
+          python3 - <<'PY'
+          import json, os, pathlib, datetime, sys
+          sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+          body = pathlib.Path("RELEASE_NOTES.md").read_text(encoding="utf-8").strip() if pathlib.Path("RELEASE_NOTES.md").exists() else ""
+          if not body:
+              body = f"Nueva version {os.environ['XPE_VERSION']} de XPE Agent con mejoras para ti."
+          manifest = {
+              "version": os.environ["XPE_VERSION"],
+              "body": body,
+              "pub_date": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+              "platforms": {
+                  "windows-x86_64": {
+                      "signature": os.environ["XPE_SIG"],
+                      "url": f"https://github.com/xpe-agent-respaldo/XPE-AGENT-RELEASES/releases/download/{os.environ['XPE_TAG']}/{os.environ['XPE_ZIP']}"
+                  }
+              }
+          }
+          pathlib.Path("latest.json").write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
+          print(pathlib.Path("latest.json").read_text(encoding="utf-8"))
+          PY
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+
+      - name: Crear GitHub Release (en ESTE repo publico)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: XPE Agent ${{ steps.ver.outputs.version }}
+          draft: false
+          prerelease: false
+          files: |
+            src-tauri/target/release/bundle/msi/*.msi
+            src-tauri/target/release/bundle/msi/*.msi.zip
+            src-tauri/target/release/bundle/msi/*.msi.zip.sig
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/nsis/*.nsis.zip
+            src-tauri/target/release/bundle/nsis/*.nsis.zip.sig
+            latest.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
