@@ -13,6 +13,10 @@ on:
         description: 'Versión (debe existir el tag v<version> en XPE-AGENT-SRC)'
         required: true
         default: '1.0.27'
+      ref:
+        description: 'Rama o tag del codigo (vacio = tag de la version)'
+        required: false
+        default: ''
 
 jobs:
   build-windows:
@@ -37,7 +41,7 @@ jobs:
         with:
           repository: xpe-agent/XPE-AGENT-SRC
           token: ${{ secrets.SRC_PAT }}
-          ref: ${{ steps.ver.outputs.tag }}
+          ref: ${{ github.event.inputs.ref || steps.ver.outputs.tag }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
