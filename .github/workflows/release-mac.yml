@@ -21,9 +21,11 @@ jobs:
           - runner: macos-14
             triple: aarch64-apple-darwin
             arch: arm64
-          - runner: macos-13
+            bun_target: bun-darwin-arm64
+          - runner: macos-14
             triple: x86_64-apple-darwin
             arch: intel
+            bun_target: bun-darwin-x64
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: write
@@ -72,7 +74,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p src-tauri/binaries
-          bun build --compile server.ts --outfile src-tauri/binaries/xpe-backend-${{ matrix.triple }}
+          bun build --compile --target=${{ matrix.bun_target }} server.ts --outfile src-tauri/binaries/xpe-backend-${{ matrix.triple }}
           chmod +x src-tauri/binaries/xpe-backend-${{ matrix.triple }}
           ls -la src-tauri/binaries/
 
