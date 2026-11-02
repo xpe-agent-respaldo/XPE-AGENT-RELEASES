@@ -82,7 +82,7 @@ jobs:
       - name: Compilar backend standalone (sidecar Linux)
         run: bun build --compile server.ts --outfile src-tauri/binaries/xpe-backend-x86_64-unknown-linux-gnu
 
-      - name: Build Tauri (Linux: .deb + AppImage)
+      - name: Build Tauri (Linux deb + AppImage)
         id: build_linux
         continue-on-error: true
         env:
