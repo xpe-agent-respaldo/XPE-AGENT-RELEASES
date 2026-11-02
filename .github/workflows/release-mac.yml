@@ -1,0 +1,109 @@
+name: Build XPE Agent para macOS (.dmg)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version a construir (sin la v)'
+        required: true
+        default: '1.0.29'
+      ref:
+        description: 'Rama o tag del codigo fuente'
+        required: true
+        default: 'main'
+
+jobs:
+  build-macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+            triple: aarch64-apple-darwin
+            arch: arm64
+          - runner: macos-13
+            triple: x86_64-apple-darwin
+            arch: intel
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout del codigo fuente (repo privado)
+        uses: actions/checkout@v4
+        with:
+          repository: xpe-agent/XPE-AGENT-SRC
+          token: ${{ secrets.SRC_PAT }}
+          ref: ${{ github.event.inputs.ref }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Setup Bun (backend standalone)
+        uses: oven-sh/setup-bun@v2
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.triple }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Escribir version
+        shell: bash
+        run: |
+          node -e "
+            const fs = require('fs');
+            const ver = '${{ github.event.inputs.version }}';
+            const conf = JSON.parse(fs.readFileSync('src-tauri/tauri.conf.json','utf8'));
+            if (conf.package) conf.package.version = ver; else conf.version = ver;
+            fs.writeFileSync('src-tauri/tauri.conf.json', JSON.stringify(conf,null,2));
+          "
+          sed -i '' "s/^version = \"[^\"]*\"/version = \"${{ github.event.inputs.version }}\"/" src-tauri/Cargo.toml || true
+
+      - name: Compilar backend standalone (sidecar)
+        shell: bash
+        run: |
+          mkdir -p src-tauri/binaries
+          bun build --compile server.ts --outfile src-tauri/binaries/xpe-backend-${{ matrix.triple }}
+          chmod +x src-tauri/binaries/xpe-backend-${{ matrix.triple }}
+          ls -la src-tauri/binaries/
+
+      - name: Build Tauri App (dmg sin firma de Apple)
+        shell: bash
+        env:
+          TAURI_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
+          TAURI_PASSWORD: ${{ secrets.TAURI_PASSWORD }}
+          TAURI_KEY_PASSWORD: ${{ secrets.TAURI_PASSWORD }}
+          CI: true
+        run: npx tauri build --target ${{ matrix.triple }} --bundles dmg
+
+      - name: Recoger el dmg
+        id: files
+        shell: bash
+        run: |
+          set -e
+          DMG=$(find src-tauri/target -name "*.dmg" | head -1 || true)
+          echo "dmg=$DMG" >> $GITHUB_OUTPUT
+          if [ -z "$DMG" ]; then echo "No se genero ningun dmg"; exit 1; fi
+          OUT="XPE-Agent-${{ github.event.inputs.version }}-macOS-${{ matrix.arch }}.dmg"
+          cp "$DMG" "$OUT"
+          echo "out=$OUT" >> $GITHUB_OUTPUT
+          ls -la "$OUT"
+
+      - name: Publicar en el release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ github.event.inputs.version }}
+          name: XPE Agent v${{ github.event.inputs.version }}
+          files: ${{ steps.files.outputs.out }}
+          fail_on_unmatched_files: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
