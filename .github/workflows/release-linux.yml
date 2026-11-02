@@ -82,14 +82,27 @@ jobs:
       - name: Compilar backend standalone (sidecar Linux)
         run: bun build --compile server.ts --outfile src-tauri/binaries/xpe-backend-x86_64-unknown-linux-gnu
 
-      - name: Build Tauri (Linux)
+      - name: Build Tauri (Linux: .deb + AppImage)
+        id: build_linux
+        continue-on-error: true
         env:
           APPIMAGE_EXTRACT_AND_RUN: '1'
           NO_STRIP: 'true'
           TAURI_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
           TAURI_PASSWORD: ${{ secrets.TAURI_PASSWORD }}
           TAURI_KEY_PASSWORD: ${{ secrets.TAURI_PASSWORD }}
-        run: npm run tauri build -- --bundles deb
+        run: npm run tauri build -- --bundles deb,appimage
+
+      # Si el AppImage no empaqueta, Linux SIEMPRE se queda con su .deb.
+      - name: Reintento solo .deb
+        if: steps.build_linux.outcome != 'success'
+        env:
+          TAURI_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
+          TAURI_PASSWORD: ${{ secrets.TAURI_PASSWORD }}
+          TAURI_KEY_PASSWORD: ${{ secrets.TAURI_PASSWORD }}
+        run: |
+          echo "El AppImage fallo en esta build; se publica solo el .deb."
+          npm run tauri build -- --bundles deb
 
       - name: Subir artefactos de Linux al release (mismo repo publico)
         uses: softprops/action-gh-release@v2
