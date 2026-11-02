@@ -1,0 +1,66 @@
+name: Build IPA (sin Mac, sin firma de Apple)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version a empaquetar (ej. 1.0.29)"
+        required: false
+        default: "1.0.29"
+
+permissions:
+  contents: write
+
+jobs:
+  ipa:
+    runs-on: macos-14
+    timeout-minutes: 60
+    steps:
+      - name: Traer el codigo de XPE Agent
+        uses: actions/checkout@v4
+        with:
+          repository: xpe-agent-respaldo/XPE-AGENT
+          token: ${{ secrets.SRC_PAT }}
+          path: src
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Dependencias y build web
+        working-directory: src
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+
+      - name: Envolver en iOS con Capacitor
+        working-directory: src
+        run: |
+          npm i -D @capacitor/cli @capacitor/core @capacitor/ios --no-audit --no-fund
+          npx cap add ios || true
+          npx cap sync ios
+
+      - name: Compilar sin firma
+        working-directory: src
+        run: |
+          cd ios/App
+          xcodebuild -workspace App.xcworkspace -scheme App -configuration Release \
+            -sdk iphoneos -destination generic/platform=iOS \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            -derivedDataPath build build
+
+      - name: Empaquetar la IPA
+        working-directory: src
+        run: |
+          APP=$(find ios/App/build -name "App.app" -maxdepth 6 | head -1)
+          echo "app: $APP"
+          mkdir -p payload/Payload
+          cp -R "$APP" payload/Payload/
+          cd payload && zip -qry "../XPE-Agent-${{ inputs.version }}-unsigned.ipa" Payload
+
+      - name: Guardar el instalador
+        uses: actions/upload-artifact@v4
+        with:
+          name: XPE-Agent-IPA
+          path: src/XPE-Agent-*.ipa
+          if-no-files-found: error
