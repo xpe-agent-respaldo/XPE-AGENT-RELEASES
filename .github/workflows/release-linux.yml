@@ -9,8 +9,12 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Tag existente (ej: v1.0.27)'
+        description: 'Tag existente (ej: v1.0.29)'
         required: true
+      ref:
+        description: 'Rama o tag del codigo (vacio = tag de la version)'
+        required: false
+        default: ''
 
 jobs:
   build-linux:
@@ -44,7 +48,7 @@ jobs:
         with:
           repository: xpe-agent/XPE-AGENT-SRC
           token: ${{ secrets.SRC_PAT }}
-          ref: ${{ steps.ver.outputs.tag }}
+          ref: ${{ github.event.inputs.ref || steps.ver.outputs.tag }}
 
       - name: Dependencias del sistema (WebKitGTK para Tauri v1)
         run: |
