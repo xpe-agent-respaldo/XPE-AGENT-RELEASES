@@ -70,7 +70,7 @@ jobs:
             const fs = require('fs');
             const ver = '${{ steps.ver.outputs.version }}';
             const conf = JSON.parse(fs.readFileSync('src-tauri/tauri.conf.json', 'utf8'));
-            conf.package.version = ver;
+            if (conf.package) { conf.package.version = ver; } else { conf.version = ver; }
             fs.writeFileSync('src-tauri/tauri.conf.json', JSON.stringify(conf, null, 2));
           "
           sed -i "s/^version = \"[^\"]*\"/version = \"${{ steps.ver.outputs.version }}\"/" src-tauri/Cargo.toml
