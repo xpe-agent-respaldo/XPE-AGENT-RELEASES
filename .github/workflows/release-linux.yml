@@ -53,7 +53,7 @@ jobs:
       - name: Dependencias del sistema (WebKitGTK para Tauri v1)
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.0-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev patchelf build-essential curl wget file
+          sudo apt-get install -y libwebkit2gtk-4.0-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev patchelf build-essential curl wget file libfuse2 zsync
 
       - uses: actions/setup-node@v4
         with:
