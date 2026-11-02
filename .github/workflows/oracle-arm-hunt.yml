@@ -1,0 +1,92 @@
+name: Cazar ARM Oracle (Always Free)
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  hunt:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Instalar OCI CLI
+        run: pip install --quiet oci-cli
+
+      - name: Configurar credenciales
+        env:
+          OCI_KEY: ${{ secrets.OCI_KEY }}
+          OCI_TENANCY: ${{ secrets.OCI_TENANCY }}
+          OCI_USER: ${{ secrets.OCI_USER }}
+          OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+          OCI_REGION: ${{ secrets.OCI_REGION }}
+        run: |
+          mkdir -p ~/.oci
+          printf '%s' "$OCI_KEY" > ~/.oci/key.pem
+          chmod 600 ~/.oci/key.pem
+          cat > ~/.oci/config <<EOF
+          [DEFAULT]
+          user=$OCI_USER
+          fingerprint=$OCI_FINGERPRINT
+          tenancy=$OCI_TENANCY
+          region=$OCI_REGION
+          key_file=~/.oci/key.pem
+          EOF
+
+      - name: Intentar lanzar la ARM grande
+        id: hunt
+        env:
+          SUBNET: ${{ secrets.OCI_SUBNET }}
+          IMAGE: ocid1.image.oc1.iad.aaaaaaaarcimxbd44557q5zqki35y3rsymeeurnyve7zjim7n3aomcrxb66a
+          TENANCY: ${{ secrets.OCI_TENANCY }}
+        run: |
+          set +e
+          EXIST=$(oci compute instance list --compartment-id "$TENANCY" --all --query "data[?shape=='VM.Standard.A1.Flex'].id" --raw-output 2>/dev/null)
+          if [ -n "$EXIST" ] && [ "$EXIST" != "[]" ]; then
+            echo "Ya existe una instancia ARM. Nada que hacer."
+            echo "found=exists" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          for AD in lnmz:US-ASHBURN-AD-1 lnmz:US-ASHBURN-AD-2 lnmz:US-ASHBURN-AD-3; do
+            for SIZE in "4 24" "2 12" "1 6"; do
+              set -- $SIZE
+              echo "Probando $AD con $1 OCPU / $2 GB"
+              OUT=$(oci compute instance launch --compartment-id "$TENANCY" --availability-domain "$AD" \
+                --shape VM.Standard.A1.Flex --shape-config "{\"ocpus\":$1,\"memoryInGBs\":$2}" \
+                --image-id "$IMAGE" --subnet-id "$SUBNET" --assign-public-ip true \
+                --display-name xpe-core-big --query 'data.id' --raw-output 2>&1)
+              if echo "$OUT" | grep -q "ocid1.instance"; then
+                echo "CONSEGUIDA en $AD ($1 OCPU / $2 GB)"
+                sleep 40
+                IP=$(oci compute instance list-vnics --instance-id "$OUT" --query 'data[0]."public-ip"' --raw-output 2>/dev/null | tr -d '"')
+                echo "found=yes" >> "$GITHUB_OUTPUT"
+                echo "ip=$IP" >> "$GITHUB_OUTPUT"
+                echo "ad=$AD" >> "$GITHUB_OUTPUT"
+                echo "size=$1 OCPU / $2 GB" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              echo "$OUT" | head -1
+            done
+          done
+          echo "Sin capacidad todavia. Otro intento en 30 minutos."
+          echo "found=no" >> "$GITHUB_OUTPUT"
+
+      - name: Avisar por issue
+        if: steps.hunt.outputs.found == 'yes'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IP: ${{ steps.hunt.outputs.ip }}
+          AD: ${{ steps.hunt.outputs.ad }}
+          SIZE: ${{ steps.hunt.outputs.size }}
+        run: |
+          gh issue create --repo "${{ github.repository }}" \
+            --title "ARM grande conseguida: $IP" \
+            --body "Instancia xpe-core-big lista.\nIP: $IP\nZona: $AD\nTamano: $SIZE\n\nSiguiente paso: desplegar el sandbox con docker-compose.sandbox.yml"
