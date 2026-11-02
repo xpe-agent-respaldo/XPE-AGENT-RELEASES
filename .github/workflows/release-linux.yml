@@ -91,9 +91,9 @@ jobs:
           TAURI_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
           TAURI_PASSWORD: ${{ secrets.TAURI_PASSWORD }}
           TAURI_KEY_PASSWORD: ${{ secrets.TAURI_PASSWORD }}
-        run: npm run tauri build -- --bundles deb,appimage
+        run: npm run tauri build -- --bundles deb
 
-      # Si el AppImage no empaqueta, Linux SIEMPRE se queda con su .deb.
+      # Respaldo por si el .deb falla: se reintenta una vez.
       - name: Reintento solo .deb
         if: steps.build_linux.outcome != 'success'
         env:
