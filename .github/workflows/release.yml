@@ -153,6 +153,7 @@ jobs:
           PYEOF
 
       - name: Ajustar latest.json al nombre real del instalador
+        shell: bash
         run: |
           python3 - <<'PYEOF'
           import json, os
