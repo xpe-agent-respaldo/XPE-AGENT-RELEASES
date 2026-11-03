@@ -152,6 +152,20 @@ jobs:
           print("latest.json ->", manifest["version"], url)
           PYEOF
 
+      - name: Ajustar latest.json al nombre real del instalador
+        run: |
+          python3 - <<'PYEOF'
+          import json, os
+          m = json.load(open("latest.json", encoding="utf-8"))
+          for plat, info in (m.get("platforms") or {}).items():
+              url = info.get("url", "")
+              # Tauri nombra el archivo con puntos donde el productName tiene espacios
+              fixed = url.replace("%20", ".").replace(" ", ".")
+              info["url"] = fixed
+              print(plat, "->", fixed)
+          json.dump(m, open("latest.json", "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+          PYEOF
+
       - name: Crear GitHub Release (en ESTE repo publico)
         uses: softprops/action-gh-release@v2
         with:
