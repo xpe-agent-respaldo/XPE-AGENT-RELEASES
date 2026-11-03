@@ -73,7 +73,7 @@ jobs:
           node -e "
             const fs=require('fs');
             const c=JSON.parse(fs.readFileSync('src-tauri/tauri.conf.json','utf8'));
-            c.package.version='${{ steps.ver.outputs.version }}';
+            if(c.package){c.package.version='${{ steps.ver.outputs.version }}';}else{c.version='${{ steps.ver.outputs.version }}';}
             c.tauri.bundle.targets=['deb','appimage','updater'];
             fs.writeFileSync('src-tauri/tauri.conf.json',JSON.stringify(c,null,2));
           "
