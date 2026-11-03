@@ -86,6 +86,8 @@ jobs:
         shell: bash
         env:
           TAURI_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_PASSWORD }}
           TAURI_PASSWORD: ${{ secrets.TAURI_PASSWORD }}
           TAURI_KEY_PASSWORD: ${{ secrets.TAURI_PASSWORD }}
         run: npm run tauri build
@@ -99,20 +101,30 @@ jobs:
           MSI=$(ls src-tauri/target/release/bundle/msi/*.msi | head -1)
           echo "msi_path=$MSI" >> $GITHUB_OUTPUT
           echo "msi_name=$(basename "$MSI")" >> $GITHUB_OUTPUT
-          ZIP=$(ls src-tauri/target/release/bundle/msi/*.msi.zip | head -1)
-          echo "zip_name=$(basename "$ZIP")" >> $GITHUB_OUTPUT
-          SIG=$(ls src-tauri/target/release/bundle/msi/*.msi.zip.sig | head -1)
-          echo "sig_path=$SIG" >> $GITHUB_OUTPUT
+          # Tauri 2 firma el propio instalador; Tauri 1 firmaba un zip.
+          EXE=$(ls src-tauri/target/release/bundle/nsis/*.exe 2>/dev/null | head -1)
+          EXE_SIG=$(ls src-tauri/target/release/bundle/nsis/*.exe.sig 2>/dev/null | head -1)
+          ZIP=$(ls src-tauri/target/release/bundle/msi/*.msi.zip 2>/dev/null | head -1)
+          ZIP_SIG=$(ls src-tauri/target/release/bundle/msi/*.msi.zip.sig 2>/dev/null | head -1)
+          if [ -n "$EXE" ] && [ -n "$EXE_SIG" ]; then
+            echo "up_name=$(basename "$EXE")" >> $GITHUB_OUTPUT
+            echo "up_sig_path=$EXE_SIG" >> $GITHUB_OUTPUT
+          elif [ -n "$ZIP" ] && [ -n "$ZIP_SIG" ]; then
+            echo "up_name=$(basename "$ZIP")" >> $GITHUB_OUTPUT
+            echo "up_sig_path=$ZIP_SIG" >> $GITHUB_OUTPUT
+          else
+            echo "no hay artefacto firmado"; exit 1
+          fi
 
       - name: Generar latest.json (manifest del auto-updater)
         shell: bash
         run: |
           TAG="${{ steps.ver.outputs.tag }}"
-          ZIP_NAME="${{ steps.files.outputs.zip_name }}"
-          MSI_SIG=$(cat "${{ steps.files.outputs.sig_path }}")
+          ZIP_NAME="${{ steps.files.outputs.up_name }}"
+          MSI_SIG=$(cat "${{ steps.files.outputs.up_sig_path }}")
           export XPE_VERSION="$VERSION" XPE_TAG="$TAG" XPE_ZIP="$ZIP_NAME" XPE_SIG="$MSI_SIG"
           python3 - <<'PY'
-          import json, os, pathlib, datetime, sys
+          import json, os, pathlib, datetime, sys, urllib.parse
           sys.stdout.reconfigure(encoding="utf-8", errors="replace")
           body = pathlib.Path("RELEASE_NOTES.md").read_text(encoding="utf-8").strip() if pathlib.Path("RELEASE_NOTES.md").exists() else ""
           if not body:
@@ -124,7 +136,7 @@ jobs:
               "platforms": {
                   "windows-x86_64": {
                       "signature": os.environ["XPE_SIG"],
-                      "url": f"https://github.com/xpe-agent-respaldo/XPE-AGENT-RELEASES/releases/download/{os.environ['XPE_TAG']}/{os.environ['XPE_ZIP']}"
+                      "url": f"https://github.com/xpe-agent-respaldo/XPE-AGENT-RELEASES/releases/download/{os.environ['XPE_TAG']}/" + urllib.parse.quote(os.environ["XPE_ZIP"])
                   }
               }
           }
