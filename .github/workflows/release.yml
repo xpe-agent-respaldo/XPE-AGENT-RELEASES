@@ -96,55 +96,61 @@ jobs:
         id: files
         shell: bash
         run: |
-          echo "--- msi ---"; ls src-tauri/target/release/bundle/msi/
-          echo "--- nsis ---"; ls src-tauri/target/release/bundle/nsis/
-          MSI=$(ls src-tauri/target/release/bundle/msi/*.msi | head -1)
+          set +e
+          ROOT=src-tauri/target/release/bundle
+          MSI=$(ls $ROOT/msi/*.msi 2>/dev/null | head -1)
+          EXE=$(ls $ROOT/nsis/*.exe 2>/dev/null | head -1)
+          EXESIG=$(ls $ROOT/nsis/*.exe.sig 2>/dev/null | head -1)
+          ZIP=$(ls $ROOT/msi/*.msi.zip 2>/dev/null | head -1)
+          SIG=$(ls $ROOT/msi/*.msi.zip.sig 2>/dev/null | head -1)
+          echo "msi=$MSI"; echo "exe=$EXE"; echo "exesig=$EXESIG"
           echo "msi_path=$MSI" >> $GITHUB_OUTPUT
-          echo "msi_name=$(basename "$MSI")" >> $GITHUB_OUTPUT
-          # Tauri 2 firma el propio instalador; Tauri 1 firmaba un zip.
-          EXE=$(ls src-tauri/target/release/bundle/nsis/*.exe 2>/dev/null | head -1)
-          EXE_SIG=$(ls src-tauri/target/release/bundle/nsis/*.exe.sig 2>/dev/null | head -1)
-          ZIP=$(ls src-tauri/target/release/bundle/msi/*.msi.zip 2>/dev/null | head -1)
-          ZIP_SIG=$(ls src-tauri/target/release/bundle/msi/*.msi.zip.sig 2>/dev/null | head -1)
-          if [ -n "$EXE" ] && [ -n "$EXE_SIG" ]; then
-            echo "up_name=$(basename "$EXE")" >> $GITHUB_OUTPUT
-            echo "up_sig_path=$EXE_SIG" >> $GITHUB_OUTPUT
-          elif [ -n "$ZIP" ] && [ -n "$ZIP_SIG" ]; then
-            echo "up_name=$(basename "$ZIP")" >> $GITHUB_OUTPUT
-            echo "up_sig_path=$ZIP_SIG" >> $GITHUB_OUTPUT
-          else
-            echo "no hay artefacto firmado"; exit 1
-          fi
+          echo "msi_name=$(basename "${MSI:-x}")" >> $GITHUB_OUTPUT
+          echo "exe_path=$EXE" >> $GITHUB_OUTPUT
+          echo "exe_name=$(basename "${EXE:-x}")" >> $GITHUB_OUTPUT
+          echo "exe_sig_path=$EXESIG" >> $GITHUB_OUTPUT
+          echo "zip_name=$(basename "${ZIP:-}")" >> $GITHUB_OUTPUT
+          echo "sig_path=$SIG" >> $GITHUB_OUTPUT
+          ls -la $ROOT/msi $ROOT/nsis || true
+          test -n "$MSI" || { echo "No se genero instalador"; exit 1; }
 
       - name: Generar latest.json (manifest del auto-updater)
         shell: bash
         run: |
-          TAG="${{ steps.ver.outputs.tag }}"
-          ZIP_NAME="${{ steps.files.outputs.up_name }}"
-          MSI_SIG=$(cat "${{ steps.files.outputs.up_sig_path }}")
-          export XPE_VERSION="$VERSION" XPE_TAG="$TAG" XPE_ZIP="$ZIP_NAME" XPE_SIG="$MSI_SIG"
-          python3 - <<'PY'
-          import json, os, pathlib, datetime, sys, urllib.parse
-          sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-          body = pathlib.Path("RELEASE_NOTES.md").read_text(encoding="utf-8").strip() if pathlib.Path("RELEASE_NOTES.md").exists() else ""
+          export XPE_VERSION="${{ steps.ver.outputs.version }}" XPE_TAG="${{ steps.ver.outputs.tag }}"
+          export XPE_EXE="${{ steps.files.outputs.exe_name }}" XPE_EXE_SIG_PATH="${{ steps.files.outputs.exe_sig_path }}"
+          export XPE_ZIP="${{ steps.files.outputs.zip_name }}" XPE_SIG_PATH="${{ steps.files.outputs.sig_path }}"
+          python3 - <<'PYEOF'
+          import json, os, pathlib, datetime, urllib.parse
+          body = ""
+          for cand in ("RELEASE_NOTES.md", "docs/RELEASE_NOTES.md"):
+              p = pathlib.Path(cand)
+              if p.exists():
+                  body = p.read_text(encoding="utf-8").strip(); break
           if not body:
               body = f"Nueva version {os.environ['XPE_VERSION']} de XPE Agent con mejoras para ti."
+          exe = os.environ.get("XPE_EXE") or ""
+          exe_sig_path = os.environ.get("XPE_EXE_SIG_PATH") or ""
+          zip_name = os.environ.get("XPE_ZIP") or ""
+          sig_path = os.environ.get("XPE_SIG_PATH") or ""
+          url = None; sig = ""
+          if exe and exe_sig_path and pathlib.Path(exe_sig_path).exists():
+              sig = pathlib.Path(exe_sig_path).read_text(encoding="utf-8").strip()
+              url = f"https://github.com/xpe-agent-respaldo/XPE-AGENT-RELEASES/releases/download/{os.environ['XPE_TAG']}/{urllib.parse.quote(exe)}"
+          elif zip_name and sig_path and pathlib.Path(sig_path).exists():
+              sig = pathlib.Path(sig_path).read_text(encoding="utf-8").strip()
+              url = f"https://github.com/xpe-agent-respaldo/XPE-AGENT-RELEASES/releases/download/{os.environ['XPE_TAG']}/{urllib.parse.quote(zip_name)}"
+          if not url:
+              raise SystemExit("No hay artefacto firmado para el actualizador")
           manifest = {
               "version": os.environ["XPE_VERSION"],
               "body": body,
               "pub_date": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-              "platforms": {
-                  "windows-x86_64": {
-                      "signature": os.environ["XPE_SIG"],
-                      "url": f"https://github.com/xpe-agent-respaldo/XPE-AGENT-RELEASES/releases/download/{os.environ['XPE_TAG']}/" + urllib.parse.quote(os.environ["XPE_ZIP"])
-                  }
-              }
+              "platforms": {"windows-x86_64": {"signature": sig, "url": url}},
           }
-          pathlib.Path("latest.json").write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
-          print(pathlib.Path("latest.json").read_text(encoding="utf-8"))
-          PY
-        env:
-          VERSION: ${{ steps.ver.outputs.version }}
+          pathlib.Path("latest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+          print("latest.json ->", manifest["version"], url)
+          PYEOF
 
       - name: Crear GitHub Release (en ESTE repo publico)
         uses: softprops/action-gh-release@v2
