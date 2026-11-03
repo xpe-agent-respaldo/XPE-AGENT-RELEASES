@@ -91,6 +91,8 @@ jobs:
           TAURI_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
           TAURI_PASSWORD: ${{ secrets.TAURI_PASSWORD }}
           TAURI_KEY_PASSWORD: ${{ secrets.TAURI_PASSWORD }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_PASSWORD }}
         run: npm run tauri build -- --bundles deb
 
       # Respaldo por si el .deb falla: se reintenta una vez.
@@ -100,6 +102,8 @@ jobs:
           TAURI_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
           TAURI_PASSWORD: ${{ secrets.TAURI_PASSWORD }}
           TAURI_KEY_PASSWORD: ${{ secrets.TAURI_PASSWORD }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_PASSWORD }}
         run: |
           echo "El AppImage fallo en esta build; se publica solo el .deb."
           npm run tauri build -- --bundles deb
