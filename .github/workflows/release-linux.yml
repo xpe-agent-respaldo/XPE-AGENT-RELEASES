@@ -74,7 +74,7 @@ jobs:
             const fs=require('fs');
             const c=JSON.parse(fs.readFileSync('src-tauri/tauri.conf.json','utf8'));
             if(c.package){c.package.version='${{ steps.ver.outputs.version }}';}else{c.version='${{ steps.ver.outputs.version }}';}
-            c.tauri.bundle.targets=['deb','appimage','updater'];
+            const bundle=(c.bundle||(c.tauri&&c.tauri.bundle)); if(bundle){bundle.targets=['deb'];}
             fs.writeFileSync('src-tauri/tauri.conf.json',JSON.stringify(c,null,2));
           "
           sed -i "s/^version = \"[^\"]*\"/version = \"${{ steps.ver.outputs.version }}\"/" src-tauri/Cargo.toml
