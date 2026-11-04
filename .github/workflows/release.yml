@@ -4,9 +4,11 @@ name: Build & Release XPE Agent (.exe con auto-update)
 # El codigo fuente se clona desde el repo privado xpe-agent/XPE-AGENT-SRC
 # usando el secreto SRC_PAT (solo lectura del espejo).
 on:
-  # Sin trigger por tags: el build oficial corre en el repo privado (Actions renovadas
-  # el dia 1) y publica aqui. Este workflow queda como RESPALDO manual si se agotan
-  # los minutos del privado (los repos publicos tienen Actions gratis e ilimitado).
+  # Flujo de versiones AUTOMATICO: al empujar un tag vX.Y.Z aqui, se compila y publica
+  # solo (Windows y despues Linux). El dispatch manual sigue disponible como respaldo.
+  push:
+    tags:
+      - 'v*'
   workflow_dispatch:
     inputs:
       version:
