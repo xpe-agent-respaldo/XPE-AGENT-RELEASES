@@ -1,138 +1,122 @@
-name: Auto-release XPE Agent (version nueva, builds y correos)
+name: Auto-release XPE Agent (escritorio)
 
-# Un solo boton para todo el flujo de versiones:
-#   1. Lee la version de package.json en el repo fuente (XPE-AGENT-SRC).
-#   2. Si esa version no tiene tag, lo crea.
-#   3. Si esa version no tiene release, lanza Windows, macOS y Linux.
-#   4. Espera a que existan los instaladores y dispara los correos de novedades.
-# Revisa cada 2 horas por si subiste la version, y tambien se puede lanzar a mano.
-
+# Sin intervencion de nadie. Cada 30 min mira el codigo fuente:
+#  - si package.json ya trae una version mayor que la ultima release -> la publica;
+#  - si hay cambios que afectan al exe desde la ultima release, el ultimo cambio
+#    tiene al menos 45 min (la tanda de trabajo termino) y la ultima release tiene
+#    al menos 2 h -> sube el parche (1.2.13 -> 1.2.14) en el fuente, crea el tag
+#    y lanza el build de Windows; Linux se encadena solo despues.
+# Nunca corre dos releases a la vez.
 on:
   schedule:
-    - cron: '0 */2 * * *'
+    - cron: "7,37 * * * *"
   workflow_dispatch:
     inputs:
-      version:
-        description: 'Version a publicar (vacio = la de package.json)'
-        required: false
-        default: ''
       force:
-        description: 'Reconstruir aunque el release ya exista (true/false)'
-        required: false
-        default: 'false'
+        description: "Publicar ya aunque no haya pasado el tiempo de espera"
+        type: boolean
+        default: false
 
 concurrency:
   group: auto-release
   cancel-in-progress: false
 
+permissions:
+  actions: write
+  contents: read
+
 jobs:
-  release:
+  auto:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      actions: write
     steps:
-      - name: Detectar version y estado
-        id: detect
+      - name: Clonar fuente
+        uses: actions/checkout@v4
+        with:
+          repository: xpe-agent-respaldo/XPE-AGENT
+          token: ${{ secrets.SRC_PUSH_TOKEN }}
+          ref: main
+          fetch-depth: 0
+
+      - name: Decidir si toca version nueva
+        id: d
         env:
-          SRC_PAT: ${{ secrets.SRC_PAT }}
-          TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          INPUT_VERSION: ${{ github.event.inputs.version }}
-          INPUT_FORCE: ${{ github.event.inputs.force }}
+          GH_TOKEN: ${{ github.token }}
+          FORCE: ${{ github.event.inputs.force || 'false' }}
         run: |
-          SRC=xpe-agent/XPE-AGENT-SRC
-          REL=xpe-agent-respaldo/XPE-AGENT-RELEASES
-          V="$INPUT_VERSION"
-          if [ -z "$V" ]; then
-            V=$(curl -s -H "Authorization: Bearer $SRC_PAT" \
-              "https://raw.githubusercontent.com/$SRC/main/package.json" | python3 -c "import json,sys;print(json.load(sys.stdin)['version'])")
-          fi
-          echo "version=$V" >> $GITHUB_OUTPUT
-          echo "tag=v$V" >> $GITHUB_OUTPUT
+          python3 - <<'PY'
+          import json, os, subprocess, time, datetime, re
+          def sh(*a): return subprocess.run(a, capture_output=True, text=True).stdout.strip()
+          out = open(os.environ["GITHUB_OUTPUT"], "a")
+          def fin(**kv):
+              for k, v in kv.items(): out.write(f"{k}={v}\n")
+              print(kv); raise SystemExit(0)
+          repo = os.environ["GITHUB_REPOSITORY"]
+          # 1) nada de releases solapadas
+          for wf in ("release.yml", "release-linux.yml"):
+              for st in ("in_progress", "queued"):
+                  n = sh("gh", "run", "list", "-R", repo, "-w", wf, "-s", st, "--json", "databaseId", "--jq", "length")
+                  if n and n != "0": fin(go="0", why=f"{wf} {st}")
+          rel = json.loads(sh("gh", "release", "view", "-R", repo, "--json", "tagName,publishedAt") or "{}")
+          last = rel.get("tagName", "v0.0.0").lstrip("v")
+          pub = datetime.datetime.fromisoformat(rel.get("publishedAt", "2000-01-01T00:00:00Z").replace("Z", "+00:00")).timestamp()
+          V = lambda s: tuple(int(x) for x in re.findall(r"\d+", s)[:3])
+          src = json.load(open("package.json"))["version"]
+          if V(src) > V(last): fin(go="1", bump="0", version=src, why=f"fuente {src} > release {last}")
+          # 2) cambios que afectan al exe desde la ultima release
+          base = sh("git", "rev-list", "-n1", f"v{last}") or sh("git", "rev-list", "-n1", f"--before={int(pub)}", "HEAD")
+          rel_paths = ("src/", "src-tauri/", "public/", "index.html", "package.json", "package-lock.json", "vite.config")
+          files = [f for f in sh("git", "diff", "--name-only", f"{base}..HEAD").splitlines() if f.startswith(rel_paths)]
+          if not files: fin(go="0", why="sin cambios para el exe")
+          last_commit = int(sh("git", "log", "-1", "--format=%ct", "HEAD", "--", *rel_paths) or 0)
+          now = time.time()
+          if os.environ.get("FORCE") != "true":
+              if now - last_commit < 45 * 60: fin(go="0", why="hay trabajo en curso, espero 45 min de calma")
+              if now - pub < 2 * 3600: fin(go="0", why="la ultima release tiene menos de 2 h")
+          a, b, c = V(last)
+          fin(go="1", bump="1", version=f"{a}.{b}.{c+1}", base=base, why=f"{len(files)} archivos cambiados")
+          PY
 
-          # Tag en el repo fuente (el build clona por tag).
-          HASSRC=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $SRC_PAT" \
-            "https://api.github.com/repos/$SRC/git/ref/tags/v$V")
-          if [ "$HASSRC" != "200" ]; then
-            SHA=$(curl -s -H "Authorization: Bearer $SRC_PAT" "https://api.github.com/repos/$SRC/git/ref/heads/main" \
-              | python3 -c "import json,sys;print(json.load(sys.stdin)['object']['sha'])")
-            curl -s -X POST -H "Authorization: Bearer $SRC_PAT" -H "Content-Type: application/json" \
-              "https://api.github.com/repos/$SRC/git/refs" \
-              -d "{\"ref\":\"refs/tags/v$V\",\"sha\":\"$SHA\"}" >/dev/null
-            echo "Tag v$V creado en el repo fuente."
-          fi
-
-          # Release ya publicado?
-          HASREL=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $TOKEN" \
-            "https://api.github.com/repos/$REL/releases/tags/v$V")
-          if [ "$HASREL" = "200" ] && [ "$INPUT_FORCE" != "true" ]; then
-            echo "need=false" >> $GITHUB_OUTPUT
-            echo "La version $V ya tiene release publicado."
-          else
-            echo "need=true" >> $GITHUB_OUTPUT
-            echo "Hay que compilar la version $V."
-          fi
-
-      - name: Lanzar builds (Windows, macOS y Linux)
-        if: steps.detect.outputs.need == 'true'
+      - name: Subir version en el fuente y crear tag
+        if: steps.d.outputs.go == '1'
         env:
-          TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          V: ${{ steps.detect.outputs.version }}
+          VER: ${{ steps.d.outputs.version }}
+          BUMP: ${{ steps.d.outputs.bump }}
+          BASE: ${{ steps.d.outputs.base }}
         run: |
-          REL=xpe-agent-respaldo/XPE-AGENT-RELEASES
-          dispatch() {
-            curl -s -o /dev/null -w "%{http_code}" -X POST \
-              -H "Authorization: Bearer $TOKEN" -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/$REL/actions/workflows/$1/dispatches" \
-              -d "{\"ref\":\"main\",\"inputs\":$2}"
-          }
-          echo "Windows: $(dispatch release.yml "{\"version\":\"$V\",\"ref\":\"v$V\"}")"
-          echo "macOS:   $(dispatch release-mac.yml "{\"version\":\"$V\",\"ref\":\"v$V\"}")"
-          echo "Linux:   $(dispatch release-linux.yml "{\"tag\":\"v$V\",\"ref\":\"v$V\"}")"
-
-      - name: Esperar a que esten los instaladores
-        if: steps.detect.outputs.need == 'true'
-        id: wait
-        env:
-          TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          V: ${{ steps.detect.outputs.version }}
-        run: |
-          REL=xpe-agent-respaldo/XPE-AGENT-RELEASES
-          for i in $(seq 1 55); do
-            NAMES=$(curl -s -H "Authorization: Bearer $TOKEN" "https://api.github.com/repos/$REL/releases/tags/v$V" \
-              | python3 -c "import json,sys;print(' '.join(a['name'] for a in json.load(sys.stdin).get('assets',[])))" 2>/dev/null || true)
-            EXE=no; DEB=no; DMG=no; UPD=no
-            case "$NAMES" in *setup.exe*) EXE=si;; esac
-            case "$NAMES" in *.deb*) DEB=si;; esac
-            case "$NAMES" in *.dmg*) DMG=si;; esac
-            case "$NAMES" in *latest.json*) UPD=si;; esac
-            echo "intento $i: exe=$EXE deb=$DEB dmg=$DMG latest=$UPD"
-            if [ "$EXE" = si ] && [ "$DEB" = si ] && [ "$UPD" = si ]; then
-              echo "ready=true" >> $GITHUB_OUTPUT
-              break
-            fi
-            sleep 120
-          done
-          if [ -z "$(grep ready $GITHUB_OUTPUT 2>/dev/null)" ]; then echo "ready=false" >> $GITHUB_OUTPUT; fi
-
-      - name: Avisar correos de la version nueva
-        if: steps.detect.outputs.need == 'true'
-        env:
-          ADMIN: ${{ secrets.XPE_ADMIN_KEY }}
-          V: ${{ steps.detect.outputs.version }}
-          READY: ${{ steps.wait.outputs.ready }}
-        run: |
-          if [ "$READY" != "true" ]; then
-            echo "Los builds aun no terminaron; los correos se envian solos al arrancar el servidor con whatsnew.json."
-            exit 0
+          git config user.name "XPE Agent Release"
+          git config user.email "release@xpe-agent.local"
+          if [ "$BUMP" = "1" ]; then
+            node -e '
+            const fs=require("fs"), v=process.env.VER;
+            const j=(f,fn)=>{ if(!fs.existsSync(f)) return; const o=JSON.parse(fs.readFileSync(f,"utf8")); fn(o); fs.writeFileSync(f, JSON.stringify(o,null,2)+"\n"); };
+            j("package.json", o=>o.version=v);
+            j("package-lock.json", o=>{o.version=v; if(o.packages&&o.packages[""]) o.packages[""].version=v;});
+            j("src-tauri/tauri.conf.json", o=>{ if(o.package) o.package.version=v; else o.version=v; });
+            j("public/version.json", o=>{o.version=v; o.releaseName="XPE Agent "+v;});
+            j("public/whatsnew.json", o=>{o.version=v; o.date=new Date().toISOString().slice(0,10);});'
+            sed -i "0,/^version = \"[^\"]*\"/s//version = \"$VER\"/" src-tauri/Cargo.toml
+            # Notas de la version a partir de los commits (sin hashes ni nombres de terceros)
+            {
+              echo "# XPE Agent $VER"; echo
+              git log --no-merges --format='%s' "$BASE..HEAD" \
+                | grep -viE '^(merge|revert|chore\(release\))' \
+                | sed -E 's/^(feat|fix|perf|refactor|ui|security|sec)(\([^)]*\))?!?: */- /I; t; d' \
+                | head -25
+            } > RELEASE_NOTES.md
+            [ "$(wc -l < RELEASE_NOTES.md)" -gt 2 ] || echo "- Mejoras de estabilidad y rendimiento." >> RELEASE_NOTES.md
+            git add -A package.json package-lock.json src-tauri/tauri.conf.json src-tauri/Cargo.toml public/version.json public/whatsnew.json RELEASE_NOTES.md
+            git commit -m "chore(release): v$VER [skip ci]"
+            for i in 1 2 3; do git push origin HEAD:main && break; git pull --rebase origin main; done
           fi
-          CODE=$(curl -s -o /tmp/ann.json -w "%{http_code}" -m 120 -X POST \
-            -H "Content-Type: application/json" -H "x-xpe-admin: $ADMIN" \
-            https://xpe-agent-server.onrender.com/api/news/announce-auto -d '{}')
-          echo "announce HTTP $CODE"; cat /tmp/ann.json | head -c 400
+          git tag -f "v$VER"
+          git push -f origin "v$VER"
 
-      - name: Resumen
+      - name: Lanzar build de escritorio y refrescar la web
+        if: steps.d.outputs.go == '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VER: ${{ steps.d.outputs.version }}
         run: |
-          echo "### XPE Agent ${{ steps.detect.outputs.tag }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Release necesario: ${{ steps.detect.outputs.need }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Instaladores listos: ${{ steps.wait.outputs.ready }}" >> $GITHUB_STEP_SUMMARY
+          gh workflow run release.yml -R "$GITHUB_REPOSITORY" -f version="$VER"
+          gh workflow run deploy-web.yml -R "$GITHUB_REPOSITORY" -f ref=main
+          echo "Lanzado v$VER (Windows -> Linux encadenado) y web"
