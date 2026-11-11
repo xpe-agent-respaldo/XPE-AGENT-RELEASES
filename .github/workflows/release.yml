@@ -1,7 +1,7 @@
 name: Build & Release XPE Agent (.exe con auto-update)
 
 # Este repositorio es PUBLICO: GitHub Actions corre GRATIS e ilimitado aqui.
-# El codigo fuente se clona desde el repo privado xpe-agent/XPE-AGENT-SRC
+# El codigo fuente se clona desde el repo PRINCIPAL xpe-agent-respaldo/XPE-AGENT (XPE-AGENT-SRC y Hugging Face son solo respaldo)
 # usando una deploy key SSH de SOLO LECTURA (SRC_DEPLOY_KEY) del repo principal.
 on:
   # Flujo de versiones AUTOMATICO: al empujar un tag vX.Y.Z aqui, se compila y publica
@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Versión (debe existir el tag v<version> en XPE-AGENT-SRC)'
+        description: 'Versión (debe existir el tag v<version> en xpe-agent-respaldo/XPE-AGENT)'
         required: true
         default: '1.0.27'
       ref:
@@ -186,3 +186,4 @@ jobs:
             latest.json
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
