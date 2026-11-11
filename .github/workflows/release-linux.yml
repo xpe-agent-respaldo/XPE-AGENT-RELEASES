@@ -1,4 +1,4 @@
-name: Build XPE Agent para Linux (.deb y .AppImage)
+name: Build XPE Agent para Linux (.deb, .rpm y .AppImage)
 
 # Lo lanza el build de Windows al terminar (dispatch explicito), añade sus artefactos
 # al MISMO release y amplía latest.json con la plataforma linux-x86_64.
@@ -76,7 +76,7 @@ jobs:
             const fs=require('fs');
             const c=JSON.parse(fs.readFileSync('src-tauri/tauri.conf.json','utf8'));
             if(c.package){c.package.version='${{ steps.ver.outputs.version }}';}else{c.version='${{ steps.ver.outputs.version }}';}
-            const bundle=(c.bundle||(c.tauri&&c.tauri.bundle)); if(bundle){bundle.targets=['deb','appimage'];}
+            const bundle=(c.bundle||(c.tauri&&c.tauri.bundle)); if(bundle){bundle.targets=['deb','appimage','rpm'];}
             fs.writeFileSync('src-tauri/tauri.conf.json',JSON.stringify(c,null,2));
           "
           sed -i "s/^version = \"[^\"]*\"/version = \"${{ steps.ver.outputs.version }}\"/" src-tauri/Cargo.toml
@@ -95,7 +95,7 @@ jobs:
           TAURI_KEY_PASSWORD: ${{ secrets.TAURI_PASSWORD }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_PASSWORD }}
-        run: npm run tauri build -- --bundles deb,appimage
+        run: npm run tauri build -- --bundles deb,appimage,rpm
 
       # Respaldo por si el .deb falla: se reintenta una vez.
       - name: Reintento solo .deb
@@ -116,6 +116,7 @@ jobs:
           tag_name: ${{ steps.ver.outputs.tag }}
           files: |
             src-tauri/target/release/bundle/deb/*.deb
+            src-tauri/target/release/bundle/rpm/*.rpm
             src-tauri/target/release/bundle/appimage/*.AppImage
             src-tauri/target/release/bundle/appimage/*.AppImage.tar.gz
             src-tauri/target/release/bundle/appimage/*.AppImage.tar.gz.sig
