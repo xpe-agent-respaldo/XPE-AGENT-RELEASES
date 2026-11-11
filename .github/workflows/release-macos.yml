@@ -25,6 +25,7 @@ jobs:
     runs-on: macos-14
     permissions:
       contents: write
+      actions: write
     steps:
       - name: Determinar tag y version
         id: ver
@@ -134,3 +135,9 @@ jobs:
           print("latest.json plataformas:", list(m["platforms"]))
           PY
           gh release upload "$XPE_TAG" latest.json --repo $REPO --clobber
+
+      - name: Copiar instaladores al CDN (R2)
+        if: ${{ steps.ver.outputs.prerelease != 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run mirror-r2.yml -R "$GITHUB_REPOSITORY" -f tag="${{ steps.ver.outputs.tag }}"
