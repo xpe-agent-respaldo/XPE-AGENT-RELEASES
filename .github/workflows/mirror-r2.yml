@@ -1,0 +1,81 @@
+name: Instaladores al CDN (R2)
+
+# Copia los instaladores de la ultima version estable al bucket publico xpe-downloads (R2)
+# y escribe latest/manifest.json, que la web lee para descargar directo, sin pasar por GitHub.
+# Lo lanza macOS al terminar; ademas revisa cada 30 min por si algo quedo a medias.
+on:
+  schedule:
+    - cron: "19,49 * * * *"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag a copiar (vacio = ultima version estable)'
+        required: false
+        default: ''
+
+concurrency:
+  group: mirror-r2
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Copiar a R2
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.R2_UPLOAD_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          IN_TAG: ${{ github.event.inputs.tag }}
+        run: |
+          set -e
+          PUB=https://pub-2d15d5ab57934c5e8770606428378a06.r2.dev
+          TAG="${IN_TAG:-$(gh release view -R "$GITHUB_REPOSITORY" --json tagName --jq .tagName)}"
+          echo "Version: $TAG"
+          gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json assets --jq '.assets[] | "\(.name)\t\(.size)"' > assets.tsv
+          cat assets.tsv
+          curl -fsS "$PUB/latest/manifest.json" -o old.json 2>/dev/null || echo '{}' > old.json
+          python3 - <<'PY' > plan.txt
+          import json
+          old = json.load(open("old.json"))
+          have = {f["name"]: f.get("size") for f in (old.get("all") or [])} if old.get("tag") else {}
+          for line in open("assets.tsv"):
+              n, s = line.rstrip("\n").split("\t")
+              if n.lower().endswith((".exe", ".msi", ".dmg", ".deb", ".appimage", ".apk")) and have.get(n) != int(s):
+                  print(n)
+          PY
+          if [ ! -s plan.txt ] && grep -q "\"$TAG\"" old.json; then echo "R2 ya esta al dia"; exit 0; fi
+          npm i -g wrangler@4 >/dev/null 2>&1
+          while read -r n; do
+            [ -n "$n" ] || continue
+            gh release download "$TAG" -R "$GITHUB_REPOSITORY" -p "$n" --clobber
+            ct=application/octet-stream
+            wrangler r2 object put "xpe-downloads/releases/$TAG/$n" --file "$n" --remote --content-type "$ct" \
+              --content-disposition "attachment; filename=\"$n\"" --cache-control "public, max-age=31536000, immutable"
+            rm -f "$n"
+          done < plan.txt
+          XPE_TAG="$TAG" XPE_PUB="$PUB" python3 - <<'PY'
+          import json, os, datetime
+          tag, pub = os.environ["XPE_TAG"], os.environ["XPE_PUB"]
+          files = []
+          for line in open("assets.tsv"):
+              n, s = line.rstrip("\n").split("\t")
+              if n.lower().endswith((".exe", ".msi", ".dmg", ".deb", ".appimage", ".apk")):
+                  files.append({"name": n, "size": int(s), "url": f"{pub}/releases/{tag}/{n}"})
+          def first(*exts):
+              for e in exts:
+                  for f in files:
+                      if f["name"].lower().endswith(e) and not f["name"].lower().endswith(".msi.zip"):
+                          return f
+              return None
+          m = {"tag": tag, "version": tag.lstrip("v"), "updated": datetime.datetime.utcnow().isoformat() + "Z",
+               "win": first("-setup.exe", ".exe", ".msi"), "win_msi": first(".msi"),
+               "mac": first(".dmg"), "linux": first(".appimage", ".deb"), "linux_deb": first(".deb"),
+               "android": first(".apk"), "all": files}
+          json.dump(m, open("manifest.json", "w"), indent=2)
+          print(json.dumps({k: (v or {}).get("name") if isinstance(v, dict) else v for k, v in m.items() if k != "all"}, indent=1))
+          PY
+          wrangler r2 object put xpe-downloads/latest/manifest.json --file manifest.json --remote \
+            --content-type application/json --cache-control "public, max-age=60"
+          curl -fsS "$PUB/latest/manifest.json" | head -c 300
