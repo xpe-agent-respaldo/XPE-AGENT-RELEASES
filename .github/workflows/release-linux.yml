@@ -43,11 +43,11 @@ jobs:
           echo "tag=$TAG" >> $GITHUB_OUTPUT
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
-      - name: Checkout del código FUENTE (repo privado XPE-AGENT-SRC)
+      - name: Checkout del código FUENTE (repo principal XPE-AGENT)
         uses: actions/checkout@v4
         with:
-          repository: xpe-agent/XPE-AGENT-SRC
-          token: ${{ secrets.SRC_PAT }}
+          repository: xpe-agent-respaldo/XPE-AGENT
+          ssh-key: ${{ secrets.SRC_DEPLOY_KEY }}
           ref: ${{ github.event.inputs.ref || steps.ver.outputs.tag }}
 
       - name: Dependencias del sistema (WebKitGTK para Tauri v1)
