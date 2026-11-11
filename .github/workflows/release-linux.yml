@@ -1,11 +1,8 @@
 name: Build XPE Agent para Linux (.deb y .AppImage)
 
-# Corre DESPUES del build de Windows (workflow_run), añade sus artefactos
+# Lo lanza el build de Windows al terminar (dispatch explicito), añade sus artefactos
 # al MISMO release y amplía latest.json con la plataforma linux-x86_64.
 on:
-  workflow_run:
-    workflows: ["Build & Release XPE Agent (.exe con auto-update)"]
-    types: [completed]
   workflow_dispatch:
     inputs:
       tag:
