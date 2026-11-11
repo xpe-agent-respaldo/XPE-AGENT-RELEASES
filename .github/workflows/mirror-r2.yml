@@ -42,14 +42,19 @@ jobs:
           have = {f["name"]: f.get("size") for f in (old.get("all") or [])} if old.get("tag") else {}
           for line in open("assets.tsv"):
               n, s = line.rstrip("\n").split("\t")
-              if n.lower().endswith((".exe", ".msi", ".dmg", ".deb", ".appimage", ".apk")) and have.get(n) != int(s):
+              if n.lower().endswith((".exe", ".msi", ".dmg", ".deb", ".rpm", ".appimage", ".apk")) and have.get(n) != int(s):
                   print(n)
           PY
-          if [ ! -s plan.txt ] && grep -q "\"$TAG\"" old.json; then echo "R2 ya esta al dia"; exit 0; fi
+          if [ ! -s plan.txt ] && grep -q "\"$TAG\"" old.json && grep -q sha256 old.json; then echo "R2 ya esta al dia"; exit 0; fi
+          # hashes previos (archivos que no se vuelven a subir)
+          python3 -c "import json;o=json.load(open('old.json'));[print(f['name']+'\t'+f['sha256']) for f in (o.get('all') or []) if f.get('sha256') and o.get('tag')=='$TAG']" > sums.tsv || true
+          # si faltan hashes de la version actual, se vuelven a procesar todos
+          grep -q sha256 old.json || awk -F'\t' '{print $1}' assets.tsv | grep -iE '\.(exe|msi|dmg|deb|rpm|appimage|apk)$' > plan.txt
           npm i -g wrangler@4 >/dev/null 2>&1
           while read -r n; do
             [ -n "$n" ] || continue
             gh release download "$TAG" -R "$GITHUB_REPOSITORY" -p "$n" --clobber
+            printf '%s\t%s\n' "$n" "$(sha256sum "$n" | cut -d' ' -f1)" >> sums.tsv
             ct=application/octet-stream
             wrangler r2 object put "xpe-downloads/releases/$TAG/$n" --file "$n" --remote --content-type "$ct" \
               --content-disposition "attachment; filename=\"$n\"" --cache-control "public, max-age=31536000, immutable"
@@ -58,11 +63,12 @@ jobs:
           XPE_TAG="$TAG" XPE_PUB="$PUB" python3 - <<'PY'
           import json, os, datetime
           tag, pub = os.environ["XPE_TAG"], os.environ["XPE_PUB"]
+          sums = dict(l.rstrip("\n").split("\t") for l in open("sums.tsv") if "\t" in l)
           files = []
           for line in open("assets.tsv"):
               n, s = line.rstrip("\n").split("\t")
-              if n.lower().endswith((".exe", ".msi", ".dmg", ".deb", ".appimage", ".apk")):
-                  files.append({"name": n, "size": int(s), "url": f"{pub}/releases/{tag}/{n}"})
+              if n.lower().endswith((".exe", ".msi", ".dmg", ".deb", ".rpm", ".appimage", ".apk")):
+                  files.append({"name": n, "size": int(s), "url": f"{pub}/releases/{tag}/{n}", "sha256": sums.get(n, "")})
           def first(*exts):
               for e in exts:
                   for f in files:
@@ -71,11 +77,13 @@ jobs:
               return None
           m = {"tag": tag, "version": tag.lstrip("v"), "updated": datetime.datetime.utcnow().isoformat() + "Z",
                "win": first("-setup.exe", ".exe", ".msi"), "win_msi": first(".msi"),
-               "mac": first(".dmg"), "linux": first(".appimage", ".deb"), "linux_deb": first(".deb"),
+               "mac": first(".dmg"), "linux": first(".appimage", ".deb"), "linux_deb": first(".deb"), "linux_rpm": first(".rpm"),
                "android": first(".apk"), "all": files}
           json.dump(m, open("manifest.json", "w"), indent=2)
+          open("SHA256SUMS.txt", "w").write("".join(f"{f['sha256']}  {f['name']}\n" for f in files if f["sha256"]))
           print(json.dumps({k: (v or {}).get("name") if isinstance(v, dict) else v for k, v in m.items() if k != "all"}, indent=1))
           PY
+          wrangler r2 object put "xpe-downloads/releases/$TAG/SHA256SUMS.txt" --file SHA256SUMS.txt --remote --content-type "text/plain; charset=utf-8" --cache-control "public, max-age=300"
           wrangler r2 object put xpe-downloads/latest/manifest.json --file manifest.json --remote \
             --content-type application/json --cache-control "public, max-age=60"
           curl -fsS "$PUB/latest/manifest.json" | head -c 300
