@@ -1,0 +1,136 @@
+name: Build XPE Agent para macOS (.dmg universal)
+
+# Lo lanza el build de Linux al terminar (dispatch explicito). Compila una app universal
+# (Apple Silicon + Intel), sube el .dmg y el paquete del auto-updater al MISMO release y
+# amplía latest.json con darwin-aarch64 y darwin-x86_64.
+# Sin certificado de Apple Developer el .dmg va sin notarizar: la primera vez se abre
+# con clic derecho > Abrir. La firma del auto-updater (TAURI_PRIVATE_KEY) si va incluida.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag existente (ej: v1.2.14)'
+        required: true
+      ref:
+        description: 'Rama o tag del codigo (vacio = tag de la version)'
+        required: false
+        default: ''
+
+concurrency:
+  group: latest-json-${{ github.event.inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  build-macos:
+    runs-on: macos-14
+    permissions:
+      contents: write
+    steps:
+      - name: Determinar tag y version
+        id: ver
+        shell: bash
+        run: |
+          curl -fsSL "https://raw.githubusercontent.com/$GITHUB_REPOSITORY/main/.github/scripts/xpe_version.py" -o /tmp/v.py
+          python3 /tmp/v.py "${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
+          cat $GITHUB_OUTPUT
+
+      - name: Checkout del código FUENTE (repo principal XPE-AGENT)
+        uses: actions/checkout@v4
+        with:
+          repository: xpe-agent-respaldo/XPE-AGENT
+          ssh-key: ${{ secrets.SRC_DEPLOY_KEY }}
+          ref: ${{ github.event.inputs.ref || steps.ver.outputs.tag }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - uses: oven-sh/setup-bun@v2
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - run: npm ci
+
+      - name: Version en tauri.conf.json y Cargo.toml
+        shell: bash
+        run: |
+          node -e "
+            const fs=require('fs');
+            const c=JSON.parse(fs.readFileSync('src-tauri/tauri.conf.json','utf8'));
+            if(c.package){c.package.version='${{ steps.ver.outputs.version }}';}else{c.version='${{ steps.ver.outputs.version }}';}
+            const bundle=(c.bundle||(c.tauri&&c.tauri.bundle)); if(bundle){bundle.targets=['app','dmg'];}
+            fs.writeFileSync('src-tauri/tauri.conf.json',JSON.stringify(c,null,2));
+          "
+          sed -i '' "s/^version = \"[^\"]*\"/version = \"${{ steps.ver.outputs.version }}\"/" src-tauri/Cargo.toml
+
+      - name: Compilar backend standalone (sidecar macOS universal)
+        shell: bash
+        run: |
+          mkdir -p src-tauri/binaries
+          bun build --compile --target=bun-darwin-arm64 server.ts --outfile src-tauri/binaries/xpe-backend-aarch64-apple-darwin
+          bun build --compile --target=bun-darwin-x64 server.ts --outfile src-tauri/binaries/xpe-backend-x86_64-apple-darwin
+          lipo -create -output src-tauri/binaries/xpe-backend-universal-apple-darwin \
+            src-tauri/binaries/xpe-backend-aarch64-apple-darwin src-tauri/binaries/xpe-backend-x86_64-apple-darwin
+          lipo -info src-tauri/binaries/xpe-backend-universal-apple-darwin
+
+      - name: Build Tauri (macOS universal .app + .dmg)
+        env:
+          TAURI_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
+          TAURI_PASSWORD: ${{ secrets.TAURI_PASSWORD }}
+          TAURI_KEY_PASSWORD: ${{ secrets.TAURI_PASSWORD }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_PASSWORD }}
+        run: npm run tauri build -- --target universal-apple-darwin --bundles app,dmg
+
+      - name: Nombres de artefactos
+        id: art
+        shell: bash
+        run: |
+          B=src-tauri/target/universal-apple-darwin/release/bundle
+          ls -la $B/dmg $B/macos
+          TGZ=$(ls $B/macos/*.app.tar.gz | head -1)
+          [ -f "$TGZ" ] || { echo "No se genero el paquete del auto-updater"; exit 1; }
+          # nombre sin espacios para la URL de descarga
+          NEW="$B/macos/XPE.Agent_${{ steps.ver.outputs.version }}_universal.app.tar.gz"
+          mv "$TGZ" "$NEW"; mv "$TGZ.sig" "$NEW.sig"
+          echo "tgz=$NEW" >> $GITHUB_OUTPUT
+
+      - name: Subir artefactos de macOS al release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          prerelease: ${{ steps.ver.outputs.prerelease == 'true' }}
+          files: |
+            src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+            ${{ steps.art.outputs.tgz }}
+            ${{ steps.art.outputs.tgz }}.sig
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Añadir macOS a latest.json
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          XPE_TAG: ${{ steps.ver.outputs.tag }}
+          XPE_TGZ: ${{ steps.art.outputs.tgz }}
+        shell: bash
+        run: |
+          REPO="$GITHUB_REPOSITORY"
+          gh release download "$XPE_TAG" --repo $REPO --pattern latest.json --clobber
+          python3 - <<'PY'
+          import json, os, pathlib
+          p = pathlib.Path("latest.json")
+          m = json.loads(p.read_text(encoding="utf-8"))
+          tgz = os.environ["XPE_TGZ"]
+          sig = pathlib.Path(tgz + ".sig").read_text().strip()
+          name = os.path.basename(tgz)
+          url = f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/releases/download/{os.environ['XPE_TAG']}/{name}"
+          for plat in ("darwin-aarch64", "darwin-x86_64"):
+              m.setdefault("platforms", {})[plat] = {"signature": sig, "url": url}
+          p.write_text(json.dumps(m, indent=2, ensure_ascii=False), encoding="utf-8")
+          print("latest.json plataformas:", list(m["platforms"]))
+          PY
+          gh release upload "$XPE_TAG" latest.json --repo $REPO --clobber
