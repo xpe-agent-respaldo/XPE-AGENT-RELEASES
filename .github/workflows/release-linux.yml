@@ -12,6 +12,14 @@ on:
         description: 'Rama o tag del codigo (vacio = tag de la version)'
         required: false
         default: ''
+      chain_macos:
+        description: 'Lanzar macOS al terminar (1 = si)'
+        required: false
+        default: '0'
+
+concurrency:
+  group: latest-json-${{ github.event.inputs.tag }}
+  cancel-in-progress: false
 
 jobs:
   build-linux:
@@ -19,6 +27,7 @@ jobs:
     runs-on: ubuntu-22.04
     permissions:
       contents: write
+      actions: write
     steps:
       - name: Determinar tag y version
         id: ver
@@ -33,12 +42,8 @@ jobs:
             TAG=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 20 --json tagName --jq '[.[] | select(.tagName | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))][0].tagName')
             if [ -z "$TAG" ]; then echo "No se pudo determinar el tag"; exit 1; fi
           fi
-          VERSION="${TAG#v}"
-          if ! echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
-            echo "Version invalida: '$VERSION' (debe ser semver, ej 1.0.27)"; exit 1
-          fi
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          curl -fsSL "https://raw.githubusercontent.com/$GITHUB_REPOSITORY/main/.github/scripts/xpe_version.py" -o /tmp/v.py
+          python3 /tmp/v.py "$TAG" >> $GITHUB_OUTPUT
 
       - name: Checkout del código FUENTE (repo principal XPE-AGENT)
         uses: actions/checkout@v4
@@ -71,7 +76,7 @@ jobs:
             const fs=require('fs');
             const c=JSON.parse(fs.readFileSync('src-tauri/tauri.conf.json','utf8'));
             if(c.package){c.package.version='${{ steps.ver.outputs.version }}';}else{c.version='${{ steps.ver.outputs.version }}';}
-            const bundle=(c.bundle||(c.tauri&&c.tauri.bundle)); if(bundle){bundle.targets=['deb'];}
+            const bundle=(c.bundle||(c.tauri&&c.tauri.bundle)); if(bundle){bundle.targets=['deb','appimage'];}
             fs.writeFileSync('src-tauri/tauri.conf.json',JSON.stringify(c,null,2));
           "
           sed -i "s/^version = \"[^\"]*\"/version = \"${{ steps.ver.outputs.version }}\"/" src-tauri/Cargo.toml
@@ -90,7 +95,7 @@ jobs:
           TAURI_KEY_PASSWORD: ${{ secrets.TAURI_PASSWORD }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_PASSWORD }}
-        run: npm run tauri build -- --bundles deb
+        run: npm run tauri build -- --bundles deb,appimage
 
       # Respaldo por si el .deb falla: se reintenta una vez.
       - name: Reintento solo .deb
@@ -151,3 +156,9 @@ jobs:
           PY
             gh release upload "$TAG" latest.json --repo $REPO --clobber || true
           fi
+
+      - name: Lanzar el build de macOS (mismo release)
+        if: ${{ github.event.inputs.chain_macos == '1' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run release-macos.yml -R "$GITHUB_REPOSITORY" -f tag="${{ steps.ver.outputs.tag }}"
