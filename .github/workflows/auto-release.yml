@@ -82,6 +82,8 @@ jobs:
           VER: ${{ steps.d.outputs.version }}
           BUMP: ${{ steps.d.outputs.bump }}
           BASE: ${{ steps.d.outputs.base }}
+          CF_ACC: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CF_TOK: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
           git config user.name "XPE Agent Release"
           git config user.email "release@xpe-agent.local"
@@ -95,13 +97,13 @@ jobs:
             j("public/version.json", o=>{o.version=v; o.releaseName="XPE Agent "+v;});
             j("public/whatsnew.json", o=>{o.version=v; o.date=new Date().toISOString().slice(0,10);});'
             sed -i "0,/^version = \"[^\"]*\"/s//version = \"$VER\"/" src-tauri/Cargo.toml
-            # Notas de la version a partir de los commits (sin hashes ni nombres de terceros)
+            # Notas para usuarios: se redactan a partir de los commits, sin marcas externas ni jerga
+            curl -fsSL "https://raw.githubusercontent.com/$GITHUB_REPOSITORY/main/.github/scripts/xpe_notes.py" -o /tmp/xpe_notes.py
             {
               echo "# XPE Agent $VER"; echo
               git log --no-merges --format='%s' "$BASE..HEAD" \
-                | grep -viE '^(merge|revert|chore\(release\))' \
-                | sed -E 's/^(feat|fix|perf|refactor|ui|security|sec)(\([^)]*\))?!?: */- /I; t; d' \
-                | head -25
+                | grep -viE '^(merge|revert|chore|ci|docs|test|build|style)(\(|:|!| )' \
+                | python3 /tmp/xpe_notes.py
             } > RELEASE_NOTES.md
             [ "$(wc -l < RELEASE_NOTES.md)" -gt 2 ] || echo "- Mejoras de estabilidad y rendimiento." >> RELEASE_NOTES.md
             git add -A package.json package-lock.json src-tauri/tauri.conf.json src-tauri/Cargo.toml public/version.json public/whatsnew.json RELEASE_NOTES.md
