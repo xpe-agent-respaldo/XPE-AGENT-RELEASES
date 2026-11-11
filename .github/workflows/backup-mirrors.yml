@@ -33,10 +33,9 @@ jobs:
           git fetch --tags -f origin
           git config --unset-all http.https://github.com/.extraheader || true
           B=$(printf 'x-access-token:%s' "$T" | base64 -w0)
-          G="git -c http.extraheader=AUTHORIZATION:basic_$B"
-          G="${G/_/ }"
-          $G push -f https://github.com/xpe-agent/XPE-AGENT-SRC.git HEAD:refs/heads/main
-          $G push -f https://github.com/xpe-agent/XPE-AGENT-SRC.git --tags
+          git -c "http.extraheader=AUTHORIZATION: basic $B" ls-remote https://github.com/xpe-agent/XPE-AGENT-SRC.git HEAD
+          git -c "http.extraheader=AUTHORIZATION: basic $B" push -f https://github.com/xpe-agent/XPE-AGENT-SRC.git HEAD:refs/heads/main
+          git -c "http.extraheader=AUTHORIZATION: basic $B" push -f https://github.com/xpe-agent/XPE-AGENT-SRC.git --tags
           echo "SRC al dia en $(git rev-parse --short=8 HEAD)"
 
       - name: Instantanea en Hugging Face
