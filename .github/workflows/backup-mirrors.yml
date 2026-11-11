@@ -1,0 +1,59 @@
+name: Respaldos XPE Agent (SRC + Hugging Face)
+
+# El fuente PRINCIPAL es xpe-agent-respaldo/XPE-AGENT. Este workflow solo copia:
+#  - git completo (ramas y tags) a xpe-agent/XPE-AGENT-SRC (respaldo)
+#  - instantanea de los archivos versionados a Hugging Face (respaldo extra)
+# Nunca se compila ni se despliega desde los respaldos.
+on:
+  schedule:
+    - cron: "41 */3 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: backup-mirrors
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clonar el principal
+        uses: actions/checkout@v4
+        with:
+          repository: xpe-agent-respaldo/XPE-AGENT
+          ssh-key: ${{ secrets.SRC_DEPLOY_KEY }}
+          ref: main
+          fetch-depth: 0
+
+      - name: Espejo git en XPE-AGENT-SRC
+        env:
+          T: ${{ secrets.MIRROR_SRC_TOKEN }}
+        run: |
+          git fetch --tags -f origin
+          git push -f "https://x-access-token:${T}@github.com/xpe-agent/XPE-AGENT-SRC.git" HEAD:refs/heads/main
+          git push -f "https://x-access-token:${T}@github.com/xpe-agent/XPE-AGENT-SRC.git" --tags
+          echo "SRC al dia en $(git rev-parse --short=8 HEAD)"
+
+      - name: Instantanea en Hugging Face
+        env:
+          HF_TOKEN: ${{ secrets.HF_BACKUP_TOKEN }}
+        run: |
+          pip install -q huggingface_hub
+          SHA=$(git rev-parse --short=8 HEAD)
+          mkdir -p /tmp/snap && git archive HEAD | tar -x -C /tmp/snap
+          echo "$SHA $(date -u +%FT%TZ) xpe-agent-respaldo/XPE-AGENT" > /tmp/snap/BACKUP_COMMIT.txt
+          python3 - <<'PY'
+          import os
+          from huggingface_hub import HfApi
+          api = HfApi(token=os.environ["HF_TOKEN"])
+          repo = "xpe-agent/xpe-agent-source-backup"
+          prev = ""
+          try:
+              prev = open(api.hf_hub_download(repo, "BACKUP_COMMIT.txt")).read().split()[0]
+          except Exception: pass
+          cur = open("/tmp/snap/BACKUP_COMMIT.txt").read().split()[0]
+          if prev == cur:
+              print("Hugging Face ya tenia", cur); raise SystemExit(0)
+          api.upload_folder(repo_id=repo, folder_path="/tmp/snap", commit_message=f"Respaldo automatico {cur}", delete_patterns=["*"])
+          print("Hugging Face al dia en", cur)
+          PY
