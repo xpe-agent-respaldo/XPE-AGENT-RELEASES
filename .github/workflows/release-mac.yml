@@ -18,11 +18,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: macos-14
+          - runner: macos-15
             triple: aarch64-apple-darwin
             arch: arm64
             bun_target: bun-darwin-arm64
-          - runner: macos-14
+          - runner: macos-15
             triple: x86_64-apple-darwin
             arch: intel
             bun_target: bun-darwin-x64

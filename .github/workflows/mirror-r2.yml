@@ -87,3 +87,32 @@ jobs:
           wrangler r2 object put xpe-downloads/latest/manifest.json --file manifest.json --remote \
             --content-type application/json --cache-control "public, max-age=60"
           curl -fsS "$PUB/latest/manifest.json" | head -c 300
+
+      - name: Podar versiones viejas del CDN (se quedan las 5 ultimas)
+        continue-on-error: true
+        env:
+          CF_TOKEN: ${{ secrets.R2_UPLOAD_TOKEN }}
+          CF_ACC: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          KEEP: "5"
+        run: |
+          python3 - <<'PY'
+          import json, os, re, urllib.request, urllib.parse
+          T, A, keep = os.environ["CF_TOKEN"], os.environ["CF_ACC"], int(os.environ["KEEP"])
+          base = f"https://api.cloudflare.com/client/v4/accounts/{A}/r2/buckets/xpe-downloads/objects"
+          H = {"Authorization": "Bearer " + T}
+          keys, cur = [], ""
+          while True:
+              q = urllib.parse.urlencode({"prefix": "releases/", "per_page": 1000, **({"cursor": cur} if cur else {})})
+              d = json.load(urllib.request.urlopen(urllib.request.Request(f"{base}?{q}", headers=H)))
+              keys += [o["key"] for o in d.get("result", [])]
+              cur = (d.get("result_info") or {}).get("cursor") or ""
+              if not (d.get("result_info") or {}).get("is_truncated"): break
+          V = lambda t: tuple(int(x) for x in re.findall(r"\d+", t)[:4])
+          tags = sorted({k.split("/")[1] for k in keys if k.count("/") >= 2}, key=V, reverse=True)
+          stable = [t for t in tags if re.fullmatch(r"v\d+\.\d+\.\d+", t)]
+          vivos = set(stable[:keep]) | set(tags[:2])
+          borrar = [k for k in keys if k.split("/")[1] not in vivos]
+          print("versiones en CDN:", tags, "| se quedan:", sorted(vivos, key=V), "| borro", len(borrar), "archivos")
+          for k in borrar:
+              urllib.request.urlopen(urllib.request.Request(f"{base}/{urllib.parse.quote(k, safe='')}", headers=H, method="DELETE"))
+          PY
