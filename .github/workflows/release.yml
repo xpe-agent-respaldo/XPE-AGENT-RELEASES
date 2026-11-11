@@ -25,6 +25,7 @@ jobs:
     runs-on: windows-latest
     permissions:
       contents: write
+      actions: write
     steps:
       - name: Determinar versión
         id: ver
@@ -187,3 +188,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Lanzar el build de Linux (mismo release)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run release-linux.yml -R "$GITHUB_REPOSITORY" -f tag="${{ steps.ver.outputs.tag }}"
