@@ -1,0 +1,53 @@
+name: Vigilante de tags (principal -> build de escritorio)
+
+# Cada 5 min mira los tags vX.Y.Z / vX.Y.Z-rc.N del repo PRINCIPAL xpe-agent-respaldo/XPE-AGENT.
+# Si hay un tag de los ultimos 7 dias sin release aqui, lanza release.yml (Windows -> Linux -> macOS).
+# Corre en este repo publico: gratis e ilimitado, sin depender de las Actions del principal.
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: tag-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - name: Buscar tags sin build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SRC_TOKEN: ${{ secrets.SOURCE_READ_TOKEN }}
+        run: |
+          python3 - <<'PY'
+          import json, os, re, subprocess, urllib.request, datetime
+          SRC = "xpe-agent-respaldo/XPE-AGENT"; PUB = os.environ["GITHUB_REPOSITORY"]
+          def api(url, tok):
+              r = urllib.request.Request(url, headers={"Authorization": "Bearer " + tok, "Accept": "application/vnd.github+json"})
+              return json.loads(urllib.request.urlopen(r).read())
+          tags = api(f"https://api.github.com/repos/{SRC}/tags?per_page=15", os.environ["SRC_TOKEN"])
+          rel = {r["tag_name"] for r in api(f"https://api.github.com/repos/{PUB}/releases?per_page=60", os.environ["GH_TOKEN"])}
+          runs = subprocess.run(["gh", "run", "list", "-R", PUB, "-w", "release.yml", "-L", "15", "--json", "displayTitle,status"],
+                                capture_output=True, text=True).stdout or "[]"
+          busy = " ".join(r["displayTitle"] for r in json.loads(runs) if r["status"] != "completed")
+          now = datetime.datetime.now(datetime.timezone.utc)
+          for t in tags:
+              n = t["name"]
+              if not re.fullmatch(r"v\d+\.\d+\.\d+(-(rc|beta|alpha)?\.?\d*)?", n) or n in rel or n.lstrip("v") in busy:
+                  continue
+              c = api(t["commit"]["url"], os.environ["SRC_TOKEN"])
+              d = datetime.datetime.fromisoformat(c["commit"]["committer"]["date"].replace("Z", "+00:00"))
+              if (now - d).days > 7:
+                  continue
+              print("Tag nuevo sin build:", n, "-> lanzando release.yml")
+              subprocess.run(["gh", "workflow", "run", "release.yml", "-R", PUB, "-f", "version=" + n.lstrip("v")], check=True)
+              break  # uno por vuelta para no pisar latest.json
+          else:
+              print("Nada nuevo.")
+          PY
