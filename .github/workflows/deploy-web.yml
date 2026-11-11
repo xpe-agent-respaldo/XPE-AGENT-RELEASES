@@ -21,8 +21,8 @@ jobs:
       - name: Clonar fuente
         uses: actions/checkout@v4
         with:
-          repository: xpe-agent/XPE-AGENT-SRC
-          token: ${{ secrets.SRC_PAT }}
+          repository: xpe-agent-respaldo/XPE-AGENT
+          ssh-key: ${{ secrets.SRC_DEPLOY_KEY }}
           ref: ${{ github.event.inputs.ref || 'main' }}
 
       - name: Saber si ya esta publicado este commit
