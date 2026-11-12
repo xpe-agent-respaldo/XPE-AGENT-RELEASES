@@ -202,6 +202,9 @@ jobs:
           name: XPE Agent ${{ steps.ver.outputs.version }}
           draft: false
           prerelease: ${{ steps.ver.outputs.prerelease == 'true' }}
+          # La app consulta /releases/latest: la version NUEVA debe ser siempre la 'latest'
+          # (si no, GitHub elige por fecha de creacion y el auto-update se queda en una vieja).
+          make_latest: ${{ steps.ver.outputs.prerelease == 'true' && 'false' || 'true' }}
           files: |
             src-tauri/target/release/bundle/msi/*.msi
             src-tauri/target/release/bundle/msi/*.msi.zip
